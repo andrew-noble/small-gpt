@@ -34,9 +34,6 @@ class CausalSelfAttention(nn.Module):
         # if config.use_rotary:
         #    self.rotary = Rotary(self.head_dim)
 
-
-    
-
     # SUMMARY of this layer's functionality:
     # 1. pass the tensor through the attention layer, producing queries, keys, and values
     # 2. reshape the queries, keys, and values to prepare for attention
@@ -47,7 +44,7 @@ class CausalSelfAttention(nn.Module):
     # 7. pass the tensor through the residual dropout layer
     # 8. return the output tensor
     def forward(self, x):
-        B, T, C = x.shape #shape returns a tuple describing the dims of the tensor
+        B, T, C = x.shape #shape returns a tuple describing the dims of the tensor. B batch size, T sequence length, C embedding dimension
 
         q, k, v = self.c_attn(x).split(self.config.n_embed, dim=2) #pass tensor through attention layer and retrieve queries, keys, and values
         q = q.view(B, T, self.config.n_head, C // self.config.n_head).transpose(1, 2) #reshape tensors to prepare for attention
@@ -68,10 +65,10 @@ class CausalSelfAttention(nn.Module):
                 is_causal=True,
             )
         else: #this is the attention layer without flash attention
-            attn_pattern = (q @ k.transpose(-2, -1)) * ( #just multiplying q, by transpose of k and scaling by the square root of the last dimension of k to prevent exploding gradients
+            attn_pattern = (q @ k.transpose(-2, -1)) * ( #just a DOT product of q and k and scaling by the square root of the last dimension of k to prevent exploding gradients
                 1.0 / math.sqrt(k.shape[-1])
             )  # B, nh, T, T
-            attn_pattern = attn_pattern.masked_fill( #this step masks off parts of the attention pattern that are not allowed to be attented to
+            attn_pattern = attn_pattern.masked_fill( #this step masks off parts of the attention pattern that are not allowed to be attented to. Only needed because GPU exposes future tokens, we need to block those
                 self.bias[:, :, :T, :T] == 0, float("-inf")
             )
             attn = F.softmax(attn_pattern, dim=-1) #this step applies the softmax function to the attention pattern to get the attention weights
@@ -81,3 +78,31 @@ class CausalSelfAttention(nn.Module):
 
         y = self.resid_dropout(self.c_proj(y))
         return y
+
+
+class FeedForward(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        hidden_dim = 4 * config.n_embed
+        hidden_dim = int(2 * hidden_dim / 3)
+        self.w1 = nn.Linear(config.n_embed, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, config.n_embed, bias=False)
+        self.w3 = nn.Linear(config.n_embed, hidden_dim, bias=False)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+
+
+class Block(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln_1 = nn.RMSNorm(config.n_embed)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = nn.RMSNorm(config.n_embed)
+        self.ffd = FeedForward(config)
+
+    def forward(self, x):
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.ffd(self.ln_2(x))
+        return x
