@@ -216,6 +216,7 @@ class GPT(nn.Module):
     def generate(
         self, idx, max_new_tokens, temperature=1.0, top_k=None, top_p=None, min_p=None
     ):
+    #the generation loop
         for _ in range(max_new_tokens):
             context = ( # for this pass, the context is either just this pass (if smaller than block) or everything remaining in the block
                 idx
@@ -226,6 +227,8 @@ class GPT(nn.Module):
 
             logits = logits[:, -1, :] / temperature
 
+            #each of these if branches are sampling tricks to cut down on the number of tokens that are considered for the next token
+            #top-p: nucleus sampling. keep smalled set of tokens whos cumulative probability exceeds p
             if top_p is not None and top_p > 0.0:
                 probs = torch.softmax(logits, dim=-1)
                 sorted_probs, sorted_indices = torch.sort(
@@ -245,10 +248,12 @@ class GPT(nn.Module):
                     top_p_mask[b, kept_indices] = True
                 logits[~top_p_mask] = float("-inf")
 
+            #top-k: further restricts the set of tokens to the top k tokens
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = float("-inf")
 
+            #min-p: further restricts the set of tokens to the top p% of tokens
             if min_p is not None and min_p > 0.0:
                 logit_max = logits.max(dim=-1, keepdim=True).values
                 threshold = logit_max + torch.log(
