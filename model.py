@@ -79,7 +79,7 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-
+# a simple layer that applies a sigmoid linear unit activation function and dropout to the input tensor
 class FeedForward(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -91,9 +91,9 @@ class FeedForward(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x))) #sigmoid linear unit activation function
 
-
+# a composite layer that has the attn layer and silu ff layer and some normalization layers. All this shit is like 100 layer lasagna
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -106,3 +106,154 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))
         x = x + self.ffd(self.ln_2(x))
         return x
+
+class GPT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        # register the components of the transformer with pytorch
+        transformer_dict = {
+            "wte": nn.Embedding(config.vocab_size, config.n_embed),
+            "drop": nn.Dropout(config.dropout),
+            "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            "ln_f": nn.RMSNorm(config.n_embed),
+        }
+
+        # rotary not implemented yet
+        # Only add positional embeddings if not using rotary
+        # if not config.use_rotary:
+        transformer_dict["wpe"] = nn.Embedding(config.block_size, config.n_embed)
+
+        self.transformer = nn.ModuleDict(transformer_dict)
+
+        self.lm_head = nn.Linear(config.n_embed, config.vocab_size, bias=False) #this is output layer which maps the network back down to the vocab size for outputting
+
+        self.transformer.wte.weight = self.lm_head.weight #weight tying -- an optimization
+
+        self.apply(self._init_weights)
+
+        # this is a special initialization for weights inside the attention layers.
+        # they're initialized to a normal distribution with a standard deviation that scales to the number of layers.
+        # basically nerd shit that prevents exploding gradients
+        for pn, p in self.named_parameters():
+            if pn.endswith("c_proj.weight"):
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
+                )
+
+    def _init_weights(self, module): #this initializes weights of the moded-- including bias for linear layers
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, idx, targets=None):
+        x = self.transformer.wte(idx)
+
+        # Add learnable positional embeddings
+        if not self.config.use_rotary:
+            device = idx.device
+            b, t = idx.shape
+            pos_emb = self.transformer.wpe(
+                torch.arange(0, t, dtype=torch.long, device=device)
+            )
+            x = x + pos_emb
+
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x)
+
+        if targets is not None:
+            logits = self.lm_head(x)
+            loss = F.cross_entropy(
+                logits.view(-1, logits.shape[-1]), targets.view(-1), ignore_index=-1
+            )
+        else:
+            logits = self.lm_head(x[:, [-1], :])
+            loss = None
+        return logits, loss
+
+    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(
+            f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+        )
+        print(
+            f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+        )
+
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == "cuda"
+        extra_args = dict(fused=True) if use_fused else dict()
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=betas, **extra_args
+        )
+        print(f"using fused AdamW: {use_fused}")
+
+        return optimizer
+
+    @torch.no_grad()
+    def generate(
+        self, idx, max_new_tokens, temperature=1.0, top_k=None, top_p=None, min_p=None
+    ):
+        for _ in range(max_new_tokens):
+            context = (
+                idx
+                if idx.size(1) < self.config.block_size
+                else idx[:, -self.config.block_size :]
+            )
+            logits, _ = self(context)
+
+            logits = logits[:, -1, :] / temperature
+
+            if top_p is not None and top_p > 0.0:
+                probs = torch.softmax(logits, dim=-1)
+                sorted_probs, sorted_indices = torch.sort(
+                    probs, descending=True, dim=-1
+                )
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+                mask = cumulative_probs >= top_p
+                mask[..., 0] = True
+
+                cutoff_indices = mask.int().argmax(dim=-1, keepdim=True)
+
+                top_p_mask = torch.zeros_like(logits, dtype=torch.bool)
+                for b in range(logits.size(0)):
+                    cut = cutoff_indices[b].item()
+                    kept_indices = sorted_indices[b, : cut + 1]
+                    top_p_mask[b, kept_indices] = True
+                logits[~top_p_mask] = float("-inf")
+
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+
+            if min_p is not None and min_p > 0.0:
+                logit_max = logits.max(dim=-1, keepdim=True).values
+                threshold = logit_max + torch.log(
+                    torch.tensor(min_p, device=logits.device, dtype=logits.dtype)
+                )
+                logits[logits < threshold] = float("-inf")
+
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+
+            if idx_next == 2:
+                break
+            idx = torch.cat([idx, idx_next], dim=-1)
+
+        return idx
