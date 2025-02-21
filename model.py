@@ -123,8 +123,8 @@ class GPT(nn.Module):
 
         # rotary not implemented yet
         # Only add positional embeddings if not using rotary
-        # if not config.use_rotary:
-        transformer_dict["wpe"] = nn.Embedding(config.block_size, config.n_embed)
+        if not config.use_rotary:
+            transformer_dict["wpe"] = nn.Embedding(config.block_size, config.n_embed)
 
         self.transformer = nn.ModuleDict(transformer_dict)
 
@@ -155,13 +155,13 @@ class GPT(nn.Module):
         x = self.transformer.wte(idx)
 
         # Add learnable positional embeddings
-        # if not self.config.use_rotary:
-        device = idx.device
-        b, t = idx.shape
-        pos_emb = self.transformer.wpe(
-            torch.arange(0, t, dtype=torch.long, device=device)
-        )
-        x = x + pos_emb
+        if not self.config.use_rotary:
+            device = idx.device
+            b, t = idx.shape
+            pos_emb = self.transformer.wpe(
+                torch.arange(0, t, dtype=torch.long, device=device)
+            )
+            x = x + pos_emb
 
         #this is the actual model, passing the embeddings through each block of layers
         for block in self.transformer.h:
