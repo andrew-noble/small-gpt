@@ -5,7 +5,7 @@ from tokenizer import Tokenizer
 from model import GPT
 from config import GPTConfig
 
-
+#this file just generates a sample run of the model with sensible args
 def parse_args():
     parser = argparse.ArgumentParser(description="GPT Inference Script")
     parser.add_argument(

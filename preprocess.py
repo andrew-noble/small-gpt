@@ -3,7 +3,7 @@ import argparse
 import json
 import requests
 from pathlib import Path
-from tqdm import tqdm
+from tqdm import tqdm #for progress bar
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
