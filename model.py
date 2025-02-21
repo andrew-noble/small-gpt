@@ -131,18 +131,18 @@ class GPT(nn.Module):
 
         self.transformer.wte.weight = self.lm_head.weight #weight tying -- an optimization
 
-        self.apply(self._init_weights)
+        self.apply(self._init_weights) #apply is inherited from nn.Module
 
         # this is a special initialization for weights inside the attention layers.
         # they're initialized to a normal distribution with a standard deviation that scales to the number of layers.
-        # basically nerd shit that prevents exploding gradients
-        for pn, p in self.named_parameters():
+        # basically some nerd GPT shit that prevents exploding gradients
+        for pn, p in self.named_parameters(): #named_parameters() is inherited from nn.Module
             if pn.endswith("c_proj.weight"):
                 torch.nn.init.normal_(
                     p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
                 )
 
-    def _init_weights(self, module): #this initializes weights of the moded-- including bias for linear layers
+    def _init_weights(self, module): #this initializes weights of the model-- including bias for linear layers
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
@@ -154,13 +154,13 @@ class GPT(nn.Module):
         x = self.transformer.wte(idx)
 
         # Add learnable positional embeddings
-        if not self.config.use_rotary:
-            device = idx.device
-            b, t = idx.shape
-            pos_emb = self.transformer.wpe(
-                torch.arange(0, t, dtype=torch.long, device=device)
-            )
-            x = x + pos_emb
+        # if not self.config.use_rotary:
+        device = idx.device
+        b, t = idx.shape
+        pos_emb = self.transformer.wpe(
+            torch.arange(0, t, dtype=torch.long, device=device)
+        )
+        x = x + pos_emb
 
         for block in self.transformer.h:
             x = block(x)
