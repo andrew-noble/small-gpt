@@ -14,7 +14,7 @@ from tokenizer import Tokenizer
 train_config = TrainingConfig()
 out_dir = "out/"
 writer = SummaryWriter(log_dir=os.path.join(out_dir, "logs"))
-resume = True
+resume = False
 ddp = int(os.environ.get("RANK", -1)) != -1
 tokenizer = Tokenizer(f"data/tok{GPTConfig.vocab_size}.model")
 
