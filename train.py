@@ -44,6 +44,8 @@ tokens_per_iter = (
 if master_process:
     print("Tokens per iteration: ", tokens_per_iter)
 
+
+#sets up output directory for checkpoints and logs
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
 torch.manual_seed(42 + seed_offset)
@@ -71,6 +73,8 @@ iter_batches = partial(
 )
 
 best_val_loss = 1e9
+
+#sets up weights if resuming from checkpoint
 if resume:
     ckpt_path = os.path.join(out_dir, "ckpt.pt")
     checkpoint = torch.load(ckpt_path, map_location=train_config.device)
@@ -90,6 +94,7 @@ else:
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf).to(train_config.device)
 
+#sets up gradient scaler for mixed precision training
 scaler = torch.GradScaler(enabled=(train_config.dtype == "float16"))
 optimizer = model.configure_optimizers(
     train_config.weight_decay,
@@ -105,6 +110,7 @@ if train_config.compile:
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
+#estimates loss only for training
 @torch.no_grad()
 def estimate_loss():
     out = {}
@@ -121,7 +127,7 @@ def estimate_loss():
     model.train()
     return out
 
-
+#sets up learning rate schedule (warmup, decay, etc)
 def get_lr(it):
     if it < train_config.warmup_iters:
         return train_config.learning_rate * (it + 1) / (train_config.warmup_iters + 1)
@@ -135,7 +141,7 @@ def get_lr(it):
         train_config.learning_rate - train_config.min_lr
     )
 
-
+# sums params in model -- giving us a look at what model the config produces
 params = sum([p.numel() for p in model.parameters() if p.requires_grad])
 if master_process:
     print("Number of params:", params)
@@ -147,19 +153,23 @@ iter_num = 0
 raw_model = model.module if ddp else model
 t0 = time.time()
 while True:
+    # update learning rate according to schedule
     lr = get_lr(iter_num) if train_config.decay_lr else train_config.learning_rate
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
+    # evaluate loss every eval_interval iterations
     if iter_num % train_config.eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(
             f"step {iter_num}: train_loss {losses['train']:.4f}, val_loss {losses['val']:.4f}"
         )
+        #log losses and learning rate to tensorboard
         writer.add_scalar("train_loss", losses["train"], iter_num)
         writer.add_scalar("val_loss", losses["val"], iter_num)
         writer.add_scalar("lr", lr, iter_num)
 
+        #save checkpoint if validation loss is lower than previous best
         if losses["val"] < best_val_loss:
             best_val_loss = losses["val"]
             checkpoint = {
@@ -170,6 +180,8 @@ while True:
             }
             print(f"Saving checkpoint to {out_dir}")
             torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+
+        #generate a story to test this iteration
         model.eval()
         prompt = "Once upon a time"
         idxs = tokenizer.encode(prompt, bos=True, eos=False)
@@ -180,26 +192,32 @@ while True:
         print("===\n\nGenerated Story:\n\n" + tokenizer.decode(y[0].tolist()) + "\n\n===")
         model.train()
 
+    #training loop
     for micro_step in range(train_config.gradient_accumulation_steps):
         if ddp:
+            #only sync gradients on last micro step
             model.require_backward_grad_sync = micro_step == train_config.gradient_accumulation_steps - 1 
+        #context manager for mixed precision training
         with ctx:
+            #forward pass
             logits, loss = model(X, Y)
             loss = loss / train_config.gradient_accumulation_steps
         X, Y = next(train_batch_iter)
+        #backward pass -- calculates gradients
         scaler.scale(loss).backward()
 
     if train_config.grad_clip != 0.0:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.grad_clip)
-    scaler.step(optimizer)
+    scaler.step(optimizer)  #updates weights
     scaler.update()
-    optimizer.zero_grad(set_to_none=True)
+    optimizer.zero_grad(set_to_none=True)  #clears gradients for next iter
 
     t1 = time.time()
     dt = t1 - t0
     t0 = t1
 
+    #log loss every log_interval iterations
     if iter_num % train_config.log_interval == 0 and master_process:
         lossf = loss.item() * train_config.gradient_accumulation_steps
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms")
