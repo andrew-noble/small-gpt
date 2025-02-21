@@ -46,7 +46,7 @@ def download() -> None:
         print("Extracting TinyStories dataset...")
         os.system(f"tar -xvf {data_filename} -C {data_dir}")
 
-
+# "train" is not like a nn here. What this does is takes the corpus and makes a most-efficient lookup table for the tokens
 def train_vocab(vocab_size: int) -> None:
     prefix = DATA_CACHE_DIR / f"tok{vocab_size}"
     tiny_file = DATA_CACHE_DIR / "tiny.txt"

@@ -121,7 +121,6 @@ class GPT(nn.Module):
             "ln_f": nn.RMSNorm(config.n_embed),
         }
 
-        # rotary not implemented yet
         # Only add positional embeddings if not using rotary
         if not config.use_rotary:
             transformer_dict["wpe"] = nn.Embedding(config.block_size, config.n_embed)
