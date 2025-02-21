@@ -107,6 +107,7 @@ class Block(nn.Module):
         x = x + self.ffd(self.ln_2(x))
         return x
 
+# the big daddy. This is the overall model, built from the building blocks above
 class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -116,7 +117,7 @@ class GPT(nn.Module):
         transformer_dict = {
             "wte": nn.Embedding(config.vocab_size, config.n_embed),
             "drop": nn.Dropout(config.dropout),
-            "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]), #weird that its called h but its the list of blocks
             "ln_f": nn.RMSNorm(config.n_embed),
         }
 
@@ -162,12 +163,14 @@ class GPT(nn.Module):
         )
         x = x + pos_emb
 
+        #this is the actual model, passing the embeddings through each block of layers
         for block in self.transformer.h:
             x = block(x)
-        x = self.transformer.ln_f(x)
+        x = self.transformer.ln_f(x) #normalize the final layer
 
+        #this codeblock just adds in the loss function for training (when there'd be targets), and returns the logits and loss
         if targets is not None:
-            logits = self.lm_head(x)
+            logits = self.lm_head(x) #logit is the prediction before being normalized via softmax
             loss = F.cross_entropy(
                 logits.view(-1, logits.shape[-1]), targets.view(-1), ignore_index=-1
             )
@@ -175,11 +178,13 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :])
             loss = None
         return logits, loss
-
+    # side note: a parameter is any trainable value in a network. So weights and biases
+    # this method just sets up an optimizer, which is a mechanism for adjusting model weights per the loss function during training
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         param_dict = {pn: p for pn, p in self.named_parameters()}
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
 
+        #we don't decay the bias parameters, which are 1D, hence the dim() check to discriminate decay/no decay
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
@@ -188,6 +193,8 @@ class GPT(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
+
+        #basically a summary report of the model architecture. snapshot of the model your config specifies
         print(
             f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
         )
@@ -205,12 +212,12 @@ class GPT(nn.Module):
 
         return optimizer
 
-    @torch.no_grad()
+    @torch.no_grad() #this decorator tells pytorch to not track gradients for this function
     def generate(
         self, idx, max_new_tokens, temperature=1.0, top_k=None, top_p=None, min_p=None
     ):
         for _ in range(max_new_tokens):
-            context = (
+            context = ( # for this pass, the context is either just this pass (if smaller than block) or everything remaining in the block
                 idx
                 if idx.size(1) < self.config.block_size
                 else idx[:, -self.config.block_size :]
