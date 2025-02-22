@@ -8,9 +8,9 @@ class GPTConfig:
     # Model configuration
     block_size: int = 64 if DEBUG_MODE else 512
     vocab_size: int = 4096
-    n_layer: int = 2 if DEBUG_MODE else 8
-    n_head: int = 2 if DEBUG_MODE else 8
-    n_embed: int = 64 if DEBUG_MODE else 512
+    n_layer: int = 2 if DEBUG_MODE else 6 # original was 8, 6 for half run
+    n_head: int = 2 if DEBUG_MODE else 6 # orig 8
+    n_embed: int = 64 if DEBUG_MODE else 384 # orig 512
     dropout: float = 0.0 if DEBUG_MODE else 0.2
     bias: bool = False
     use_rotary: bool = False
