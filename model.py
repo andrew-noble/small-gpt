@@ -6,6 +6,43 @@ import inspect
 
 from config import GPTConfig
 
+# this is the rotary embedding class. I don't understand it yet.
+class Rotary(torch.nn.Module):
+
+    def __init__(self, dim, base=10_000):
+        super().__init__()
+        self.dim = dim
+        self.base = base
+        self.inv_freq = None
+        self.seq_len_cached = None
+        self.cos_cached = None
+        self.sin_cached = None
+
+    def forward(self, q, k):
+        seq_len = q.shape[1]
+        if seq_len != self.seq_len_cached:
+            self.inv_freq = 1.0 / (
+                self.base ** (torch.arange(0, self.dim, 2, device=q.device) / self.dim)
+            )
+            self.seq_len_cached = seq_len
+            t = torch.arange(seq_len, device=q.device).type_as(self.inv_freq)
+            freqs = torch.outer(t, self.inv_freq)
+            self.cos_cached = freqs.cos().type_as(q)
+            self.sin_cached = freqs.sin().type_as(q)
+        cos, sin = self.cos_cached[None, :, None, :], self.sin_cached[None, :, None, :]
+        q_ = self.apply_rotary_emb(q, cos, sin)
+        k_ = self.apply_rotary_emb(k, cos, sin)
+        return q_, k_
+
+    def apply_rotary_emb(self, x, cos, sin):
+        assert x.ndim == 4  # multihead attention
+        d = x.shape[3] // 2
+        x1 = x[..., :d]
+        x2 = x[..., d:]
+        y1 = x1 * cos + x2 * sin
+        y2 = x1 * (-sin) + x2 * cos
+        return torch.cat([y1, y2], 3).type_as(x)
+
 ## this is simply the transformer attention layer utilized in the GPT class
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: GPTConfig):
