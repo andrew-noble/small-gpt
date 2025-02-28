@@ -259,7 +259,7 @@ class GPT(nn.Module):
                 if idx.size(1) < self.config.block_size
                 else idx[:, -self.config.block_size :]
             )
-            logits, _ = self(context)
+            logits, _ = self(context) #calling a class instance like this calls the __call__ mechanism in the parent nn.Module class, which is some setup + forward()
 
             logits = logits[:, -1, :] / temperature
 
